@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import { Type } from "typebox";
+import { captureWatchdogDiffBaseline, createWatchdogDiffTool, WATCHDOG_DIFF_TOOL_NAME } from "../watchdog/diff-tool.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import packageJson from "../../package.json" with { type: "json" };
@@ -63,6 +64,7 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 	let resolvedSystemPrompt: string | undefined;
 	let resolvedContextPolicy: { agent: string; inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean } | undefined;
 	let configured = false;
+	let watchdogDiffRegistered = false;
 	const pending = new Map<string, PendingRequest>();
 	const supervisor = new Map<string, { reason: "need_decision" | "interview_request" | "progress_update"; resolve(answer: string): void }>();
 	let evidenceCursor = 0; let journalBytes = 0; const journal: HerdrPiFrame[] = [];
@@ -151,10 +153,18 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 					if (frame.type === "supervisor-delivered" && typeof frame.requestId === "string") { const entry = supervisor.get(frame.requestId); if (!entry || entry.reason !== "progress_update") throw new Error("Unknown supervisor delivery acknowledgement."); supervisor.delete(frame.requestId); entry.resolve("delivered"); continue; }
 					if (frame.type === "configure") {
 						if (configured || typeof frame.requestId !== "string" || !frame.resources || typeof frame.resources !== "object") throw new Error("Invalid or duplicate bridge configuration.");
-						const resources = frame.resources as { agent?: unknown; skills?: unknown; toolCeiling?: unknown; reads?: unknown };
+						const resources = frame.resources as { agent?: unknown; skills?: unknown; toolCeiling?: unknown; reads?: unknown; requiredTools?: unknown };
 						const invalidSkills = resources.skills !== undefined && (!Array.isArray(resources.skills) || resources.skills.some((name) => typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)));
 						const invalidReads = resources.reads !== undefined && resources.reads !== false && (!Array.isArray(resources.reads) || resources.reads.some((name) => typeof name !== "string"));
-						if (typeof resources.agent !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(resources.agent) || invalidSkills || invalidReads) throw new Error("Remote logical resource names are invalid.");
+						const invalidRequiredTools = resources.requiredTools !== undefined && (!Array.isArray(resources.requiredTools) || resources.requiredTools.some((name) => typeof name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/u.test(name)));
+						if (typeof resources.agent !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(resources.agent) || invalidSkills || invalidReads || invalidRequiredTools) throw new Error("Remote logical resource names are invalid.");
+						// The in-process child runtime extension provides a few tools of its own; a pane child loads no
+						// inline factory, so it registers the same canonical tool from the same module on demand. The
+						// parent still proves the result through the active-tool acknowledgement below.
+						if (Array.isArray(resources.requiredTools) && resources.requiredTools.includes(WATCHDOG_DIFF_TOOL_NAME) && !watchdogDiffRegistered) {
+							watchdogDiffRegistered = true;
+							pi.registerTool(createWatchdogDiffTool(captureWatchdogDiffBaseline(process.cwd()), { workingTreeAtLaunch: true }));
+						}
 						const resolved = resolveRemoteHerdrResources(process.cwd(), { agent: resources.agent, ...(resources.skills ? { skills: resources.skills as string[] } : {}), ...(resources.toolCeiling ? { toolCeiling: resources.toolCeiling as string[] } : {}), ...(resources.reads !== undefined ? { reads: resources.reads as string[] | false } : {}) }, context ? activeTools(context) : []); resolvedSystemPrompt = resolved.systemPrompt; resolvedContextPolicy = resolved;
 						(pi as unknown as { setActiveTools?(tools: string[]): void }).setActiveTools?.(resolved.tools); const acknowledged = context ? activeTools(context) : []; if (acknowledged.some((tool) => !resolved.tools.includes(tool)) || resolved.tools.some((tool) => !acknowledged.includes(tool))) throw new Error(`Remote Pi did not apply the resolved active-tool set exactly (extra: ${acknowledged.filter((tool) => !resolved.tools.includes(tool)).join(", ") || "none"}; missing: ${resolved.tools.filter((tool) => !acknowledged.includes(tool)).join(", ") || "none"}).`);
 						configured = true; send({ type: "configured", requestId: frame.requestId, nativeSessionId, agent: resolved.agent, skills: resolved.skills, model: context?.model?.provider && context.model.id ? `${context.model.provider}/${context.model.id}` : undefined, tools: acknowledged }); continue;

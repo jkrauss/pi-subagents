@@ -154,6 +154,27 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 		finally { socket?.destroy(); handlers.get("session_shutdown")?.(); old.mode === undefined ? delete process.env[HERDR_PI_MODE_ENV] : process.env[HERDR_PI_MODE_ENV] = old.mode; old.run === undefined ? delete process.env[HERDR_PI_RUN_ENV] : process.env[HERDR_PI_RUN_ENV] = old.run; old.dir === undefined ? delete process.env[HERDR_PI_RUNTIME_DIR_ENV] : process.env[HERDR_PI_RUNTIME_DIR_ENV] = old.dir; fs.rmSync(dir, { recursive: true, force: true }); }
 	});
 
+	it("registers the canonical watchdog diff tool in a pane child that declares it", { skip: process.platform === "win32" }, async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-herdr-watchdog-diff-")); const agentFile = path.join(getAgentDir(), "agents", "watchdog-worker.md"); const old = { mode: process.env[HERDR_PI_MODE_ENV], run: process.env[HERDR_PI_RUN_ENV], dir: process.env[HERDR_PI_RUNTIME_DIR_ENV] }; process.env[HERDR_PI_MODE_ENV] = "1"; process.env[HERDR_PI_RUN_ENV] = "run_watchdog1"; process.env[HERDR_PI_RUNTIME_DIR_ENV] = dir;
+		fs.mkdirSync(path.dirname(agentFile), { recursive: true }); fs.writeFileSync(agentFile, "---\nname: watchdog-worker\ndescription: Watchdog\ntools: read, watchdog_diff\ninheritProjectContext: true\ninheritGlobalContext: false\ninheritSkills: false\n---\nWATCHDOG_WORKER\n");
+		const handlers = new Map<string, Function>(); const registered: any[] = []; const builtin = new Set(["read", "grep", "find", "ls", "bash"]); let activeTools = ["read"]; let socket: net.Socket | undefined;
+		// Model pi: an active set can only contain tools the child actually has.
+		const pi = { registerTool(value: any) { registered.push(value); }, registerCommand() {}, on(name: string, handler: Function) { handlers.set(name, handler); }, setActiveTools(value: string[]) { activeTools = value.filter((name) => builtin.has(name) || registered.some((tool) => tool.name === name)); } };
+		try {
+			registerHerdrPiBridge(pi as never); const ctx = { sessionManager: { getSessionId: () => "native", getSessionFile: () => "/remote/session" }, getActiveTools: () => activeTools, model: { provider: "p", id: "m" }, isIdle: () => true, hasPendingMessages: () => false }; handlers.get("session_start")?.({}, ctx);
+			const connect = async () => { const next = net.createConnection(path.join(dir, "bridge.sock")); const frames: any[] = []; const decoder = new HerdrPiFrameDecoder(); next.on("data", (chunk) => frames.push(...decoder.push(chunk))); next.on("error", () => {}); await new Promise<void>((resolve) => next.once("connect", resolve)); return { next, frames }; };
+			// A malformed tool contract is refused before any tool is registered, and the child stays alive for a corrected frame.
+			const bad = await connect(); bad.next.write(encodeHerdrPiFrame({ protocol: 1, runId: "run_watchdog1", type: "configure", requestId: "cfg_bad", resources: { agent: "watchdog-worker", requiredTools: [1] } }));
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			assert.equal(bad.frames.some((frame) => frame.type === "configured"), false); assert.deepEqual(registered.map((tool) => tool.name), ["contact_supervisor"]); bad.next.destroy();
+			const good = await connect(); socket = good.next; good.next.write(encodeHerdrPiFrame({ protocol: 1, runId: "run_watchdog1", type: "configure", requestId: "cfg_diff", resources: { agent: "watchdog-worker", requiredTools: ["watchdog_diff"] } }));
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			const configured = good.frames.find((frame) => frame.type === "configured"); assert.ok(configured, "a configurable pane child must acknowledge the configure frame"); assert.deepEqual(configured.tools, ["read", "watchdog_diff"]); assert.deepEqual(registered.map((tool) => tool.name), ["contact_supervisor", "watchdog_diff"]);
+			handlers.get("session_shutdown")?.();
+		}
+		finally { socket?.destroy(); handlers.get("session_shutdown")?.(); old.mode === undefined ? delete process.env[HERDR_PI_MODE_ENV] : process.env[HERDR_PI_MODE_ENV] = old.mode; old.run === undefined ? delete process.env[HERDR_PI_RUN_ENV] : process.env[HERDR_PI_RUN_ENV] = old.run; old.dir === undefined ? delete process.env[HERDR_PI_RUNTIME_DIR_ENV] : process.env[HERDR_PI_RUNTIME_DIR_ENV] = old.dir; fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(agentFile, { force: true }); }
+	});
+
 	it("frames correlated bridge data and fails closed on malformed, partial, or oversized evidence", () => {
 		const decoder = new HerdrPiFrameDecoder(); const encoded = encodeHerdrPiFrame({ protocol: 1, runId: "run_12345678", type: "settled", requestId: "q1", idle: true, pending: false });
 		assert.deepEqual(decoder.push(encoded)[0], { protocol: 1, runId: "run_12345678", type: "settled", requestId: "q1", idle: true, pending: false });

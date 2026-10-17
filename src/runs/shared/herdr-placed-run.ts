@@ -267,7 +267,7 @@ export class BridgeChannel {
 	get failed() { return this.#failed; }
 	adopt(listener: (frame: HerdrPiFrame) => void): HerdrPiFrame[] { this.#adopted = true; this.listeners.add(listener); return this.frames.splice(0); }
 	wait(type: string, requestId: string): Promise<HerdrPiFrame> { return new Promise((resolve, reject) => this.waiters.set(`${type}:${requestId}`, { resolve, reject })); }
-	configure(resources: { agent: string; skills?: string[]; toolCeiling?: string[]; reads?: string[] | false }) { const requestId = `cfg_${randomBytes(6).toString("hex")}`; const waiting = this.wait("configured", requestId); this.socket.write(encodeHerdrPiFrame({ protocol: HERDR_PI_PROTOCOL, runId: this.runId, type: "configure", requestId, resources })); return waiting; }
+	configure(resources: { agent: string; skills?: string[]; toolCeiling?: string[]; requiredTools?: string[]; reads?: string[] | false }) { const requestId = `cfg_${randomBytes(6).toString("hex")}`; const waiting = this.wait("configured", requestId); this.socket.write(encodeHerdrPiFrame({ protocol: HERDR_PI_PROTOCOL, runId: this.runId, type: "configure", requestId, resources })); return waiting; }
 	supervisorDelivered(requestId: string) { this.socket.write(encodeHerdrPiFrame({ protocol: HERDR_PI_PROTOCOL, runId: this.runId, type: "supervisor-delivered", requestId })); }
 	prepare(requestId: string, operation: string, text?: string, supervisorId?: string) { const waiting = this.wait("prepared", requestId); this.socket.write(encodeHerdrPiFrame({ protocol: HERDR_PI_PROTOCOL, runId: this.runId, type: "prepare", requestId, operation, ...(text !== undefined ? { text } : {}), ...(supervisorId ? { supervisorId } : {}) })); return waiting; }
 	close() { this.socket.destroy(); }
