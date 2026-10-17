@@ -77,6 +77,13 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 		assert.deepEqual(serializeHerdrPiLaunch({ ...clean, remoteResources: { ...clean.remoteResources!, reads: ["remote-only.md"] } }).resources.reads, ["remote-only.md"]);
 		assert.doesNotMatch(JSON.stringify(wire), /LOCAL_SECRET_PROMPT|Users\/local/u);
 		assert.throws(() => serializeHerdrPiLaunch({ ...clean, storage: { kind: "file", sessionFile: "/local/session.jsonl" } }), /fork, resume, or revival/u);
+		// A local tab child runs here, so the same launch keeps its session storage and required tools there.
+		const localSession = serializeHerdrPiLaunch({ ...clean, storage: { kind: "file", sessionFile: "/local/session.jsonl" } }, { scope: "local-tab" });
+		assert.deepEqual(localSession.args, ["--session", "/local/session.jsonl", "--no-skills", "--no-prompt-templates", "--no-context-files"]);
+		assert.deepEqual(serializeHerdrPiLaunch({ ...clean, storage: { kind: "dir", sessionDir: "/local/sessions" } }, { scope: "local-tab" }).args.slice(0, 2), ["--session-dir", "/local/sessions"]);
+		assert.deepEqual(serializeHerdrPiLaunch(clean, { scope: "local-tab" }).args, ["--no-session", "--no-skills", "--no-prompt-templates", "--no-context-files"]);
+		assert.throws(() => serializeHerdrPiLaunch({ ...clean, runtime: { ...runtime, requiredTools: ["read"] } }), /requiredTools\(1\)/u);
+		assert.deepEqual(serializeHerdrPiLaunch({ ...clean, runtime: { ...runtime, requiredTools: ["read", "read", "bash"] } }, { scope: "local-tab" }).resources.requiredTools, ["read", "bash"]);
 		assert.throws(() => serializeHerdrPiLaunch({ ...clean, extensionPaths: ["/local/private.ts"] }), /cannot transfer local extension paths/u);
 		assert.doesNotMatch(JSON.stringify(serializeHerdrPiLaunch({ ...clean, hooks: [{ name: "local", factory() {} }] })), /callback|factory|local/u);
 		assert.throws(() => serializeHerdrPiLaunch({ ...clean, runtime: { ...runtime, nestedRoute: { rootRunId: "r", eventSink: "/local/events", controlInbox: "/local/control", capabilityToken: "SECRET" } } }), /Nested delegation/u);

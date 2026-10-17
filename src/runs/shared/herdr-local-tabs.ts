@@ -766,6 +766,19 @@ export function withLocalTabOutcome(session: ChildSession, outcome: LocalTabPlac
 	return session;
 }
 
+/**
+ * The child must prove exactly the tool contract the parent asked for: nothing above the
+ * ceiling, and every required tool present. Throws with the offending names, because a
+ * silent widening or narrowing of a child's tools is the one thing this backend must not allow.
+ */
+export function assertLocalToolContract(resources: { toolCeiling?: string[]; requiredTools?: string[] }, configuredTools: unknown): void {
+	if (!Array.isArray(configuredTools)) throw new Error("Local Pi active-tool acknowledgement mismatch.");
+	const acknowledged = configuredTools.map((tool) => String(tool));
+	if (resources.toolCeiling && acknowledged.some((tool) => !resources.toolCeiling!.includes(tool))) throw new Error("Local Pi active-tool ceiling acknowledgement mismatch.");
+	const missing = (resources.requiredTools ?? []).filter((tool) => !acknowledged.includes(tool));
+	if (missing.length > 0) throw new Error(`Local Pi did not activate required tool(s): ${missing.join(", ")}.`);
+}
+
 /** Places one native Pi child in a visible local tab, or throws for the caller to fall back. */
 export async function createHerdrLocalTabSession(launch: ChildSessionLaunch, options: { startTimeoutMs?: number } = {}): Promise<ChildSession> {
 	if (launch.machine) throw new HerdrLocalTabUnavailable("Local tab placement cannot be combined with a saved machine.");
@@ -802,7 +815,7 @@ export async function createHerdrLocalTabSession(launch: ChildSessionLaunch, opt
 		if (ready.packageVersion !== packageJson.version || ready.nativeSessionId !== manifest.nativeSessionId || ready.cwd !== launch.cwd) throw new Error("Local Pi tab bridge handshake identity mismatch.");
 		const configured = await Promise.race([bridge.configure(policy.resources), bridge.failure]);
 		if (configured.nativeSessionId !== manifest.nativeSessionId || configured.agent !== policy.resources.agent) throw new Error("Local Pi resource resolution identity mismatch.");
-		if (!Array.isArray(configured.tools) || (policy.resources.toolCeiling && (configured.tools as unknown[]).some((tool) => !policy.resources.toolCeiling!.includes(String(tool))))) throw new Error("Local Pi active-tool ceiling acknowledgement mismatch.");
+		assertLocalToolContract(policy.resources, configured.tools);
 		if (launch.model && configured.model !== launch.model.split(":")[0]) throw new Error(`Local Pi model '${launch.model}' did not resolve to the requested provider/model.`);
 		const identity: HerdrRunIdentity = { runId: owner.runId, target: "local", session: owner.connection.endpoint.session, workspaceId: owner.owned!.workspaceId, tabId: owner.owned!.tabId, paneId: owner.owned!.paneId, terminalId, agentName, nativeSessionId: manifest.nativeSessionId, cwd: launch.cwd, runtimeDir: owner.runtimeDir, label: owner.label };
 		owner.journal(identity);

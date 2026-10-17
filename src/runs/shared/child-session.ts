@@ -64,7 +64,7 @@ export interface ChildSessionLaunch {
 	/** Process-local provider source owned by the invoking foreground parent. */
 	parentProviderRegistry?: ParentProviderRegistry;
 	/** Logical names resolved only by the remote ambient package. */
-	remoteResources?: { agent: string; skills?: string[]; toolCeiling?: string[]; reads?: string[] | false };
+	remoteResources?: { agent: string; skills?: string[]; toolCeiling?: string[]; requiredTools?: string[]; reads?: string[] | false };
 	storage: ChildSessionStorage;
 	/** The launching session's file, recorded as the new child session's `parentSession` header like Pi's forks. */
 	parentSessionFile?: string;

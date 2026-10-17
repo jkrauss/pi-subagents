@@ -331,7 +331,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		...(input.machine ? { machine: input.machine } : {}),
 		...(input.tabPlacement && !input.machine ? { placement: "tab" as const } : {}),
 		...(input.projectTrusted !== undefined ? { projectTrusted: input.projectTrusted } : {}),
-		...(input.machine || input.tabPlacement ? { remoteResources: { agent: input.childAgentName, ...(input.remoteSkillNames ? { skills: input.remoteSkillNames } : {}), ...(input.remoteReads !== undefined ? { reads: input.remoteReads } : {}), ...(toolPlan.explicitToolAllowlist ? { toolCeiling: [...toolPlan.effectiveToolAllowlist] } : toolPlan.capabilityCeiling?.allowedTools ? { toolCeiling: [...toolPlan.capabilityCeiling.allowedTools] } : {}) } } : {}),
+		...(input.machine || input.tabPlacement ? { remoteResources: { agent: input.childAgentName, ...(input.remoteSkillNames ? { skills: input.remoteSkillNames } : {}), ...(input.remoteReads !== undefined ? { reads: input.remoteReads } : {}), ...(toolPlan.explicitToolAllowlist ? { toolCeiling: [...toolPlan.effectiveToolAllowlist] } : toolPlan.capabilityCeiling?.allowedTools ? { toolCeiling: [...toolPlan.capabilityCeiling.allowedTools] } : {}), ...(input.tabPlacement && toolPlan.requiredChildTools.length > 0 ? { requiredTools: [...toolPlan.requiredChildTools] } : {}) } } : {}),
 		storage: childStorage(input),
 		...(input.parentSessionFile ? { parentSessionFile: input.parentSessionFile } : {}),
 		...(input.model ? { model: input.model } : {}),

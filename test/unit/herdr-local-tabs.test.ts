@@ -257,6 +257,14 @@ describe("local Herdr tab provisioning", () => {
 		const client = { async call(method: string) { return snapshotResponse({ tabs, panes: [], agents: [] }); } } as never;
 		await assert.rejects(() => provisionHerdrLocalTab(client, { ...input, maxTabs: 4 }), /pane budget/u);
 	}));
+	it("requires the child to prove the exact tool contract", async () => {
+		const { assertLocalToolContract } = await import("../../src/runs/shared/herdr-local-tabs.ts");
+		assertLocalToolContract({ toolCeiling: ["read", "bash"], requiredTools: ["read"] }, ["read"]);
+		assert.throws(() => assertLocalToolContract({ toolCeiling: ["read"] }, ["read", "bash"]), /ceiling acknowledgement mismatch/u);
+		assert.throws(() => assertLocalToolContract({ requiredTools: ["read", "bash"] }, ["read"]), /did not activate required tool\(s\): bash/u);
+		assert.throws(() => assertLocalToolContract({}, undefined), /active-tool acknowledgement mismatch/u);
+	});
+
 	it("keeps an owned run owner surface that a shared transport can drive", () => {
 		const owner: PlacedRunOwner = { connection: { socketPath: "/tmp/x", client: { call: async () => ({}), subscribe: async () => () => {} }, close: async () => {} } as never, snapshot: { connection: "connected", state: "ready", revision: 0 }, observeEvent: () => {}, markConnectionUnknown: () => true, replaceConnection: async () => {}, cleanup: async () => {} };
 		const identity: HerdrRunIdentity = { runId: RUN_ID, target: "local", session: null, workspaceId: "w1", tabId: "t1", paneId: "p1", terminalId: "term1", agentName: "pi-run", nativeSessionId: "native", cwd: "/tmp", runtimeDir: "/tmp/run", label: `${HERDR_LOCAL_TAB_LABEL_PREFIX}12345678` };

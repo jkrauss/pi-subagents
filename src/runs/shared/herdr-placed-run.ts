@@ -146,23 +146,51 @@ export async function withHerdrPaneAllocationLock<T>(key: string, action: () => 
 	} finally { try { fs.unlinkSync(tempPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
 }
 
-export function serializeHerdrPiLaunch(launch: ChildSessionLaunch, options: { scope?: "machine" | "local-tab" } = {}): { args: string[]; resources: { agent: string; skills?: string[]; toolCeiling?: string[]; reads?: string[] | false } } {
+/**
+ * Maps the run's session storage onto the local child's CLI, so a placed tab keeps
+ * exactly the persistence semantics of an in-process child: the run's own session
+ * file stays resumable, a run-scoped directory stays a directory, and a memory-only
+ * run writes no session at all.
+ */
+function sessionArgs(storage: ChildSessionLaunch["storage"]): string[] {
+	switch (storage.kind) {
+		case "file": return ["--session", storage.sessionFile];
+		case "dir": return ["--session-dir", storage.sessionDir];
+		case "memory": return ["--no-session"];
+		case "default": return [];
+	}
+}
+
+export function serializeHerdrPiLaunch(launch: ChildSessionLaunch, options: { scope?: "machine" | "local-tab" } = {}): { args: string[]; resources: { agent: string; skills?: string[]; toolCeiling?: string[]; requiredTools?: string[]; reads?: string[] | false } } {
 	// Both backends hand the child its own logical resources, so every capability limit below is shared.
 	const local = options.scope === "local-tab",
 		where = local ? "Local tab placement" : "Pane-native remote Pi",
 		absent = local ? "remove local tab placement" : "remove machine placement";
-	if (launch.storage.kind === "file") throw new Error(`${where} does not support fork, resume, or revival; use fresh context.`);
+	// A local tab child runs on this host, so it can own the run's session storage exactly like an in-process child.
+	// A remote pane cannot: the session file would live on the wrong machine, which is why that backend still refuses.
+	if (launch.storage.kind === "file" && !local) throw new Error(`${where} does not support fork, resume, or revival; use fresh context.`);
 	if (launch.extensionPaths.length || launch.requiredExtensions?.length) throw new Error(`${where} cannot transfer local extension paths; install/configure pi-subagents as an ambient extension on the placed host.`);
 	if (launch.processEnv && Object.values(launch.processEnv).some((value) => value !== undefined && value !== "__none__")) throw new Error(`${where} cannot transfer local bindings, MCP selections, or process environment.`);
 	if (launch.runtime.nestedRoute || launch.runtime.fanoutChild || launch.runtime.depth > 1) throw new Error(`Nested delegation from a placed child is not supported.`);
-	if (launch.excludeTools?.length || launch.runtime.permissions || launch.runtime.toolBudget || launch.runtime.requiredExtensions || launch.runtime.requiredTools?.length || launch.runtime.mcpDirectTools?.length) throw new Error(`${where} cannot yet represent exclusions, permission rules, tool budgets, MCP direct tools, or required-tool/extension contracts; ${absent}.`);
+	const unsupported = [
+		launch.excludeTools?.length ? `excludeTools(${launch.excludeTools.length})` : undefined,
+		launch.runtime.permissions ? "permission rules" : undefined,
+		launch.runtime.toolBudget ? "toolBudget" : undefined,
+		launch.runtime.requiredExtensions ? "requiredExtensions" : undefined,
+		// A local tab child runs here and its bridge acknowledges the exact active-tool set, so required tools
+		// are verifiable and supported; a remote pane cannot be checked the same way and still refuses them.
+		!local && launch.runtime.requiredTools?.length ? `requiredTools(${launch.runtime.requiredTools.length})` : undefined,
+		launch.runtime.mcpDirectTools?.length ? `mcpDirectTools(${launch.runtime.mcpDirectTools.length})` : undefined,
+	].filter((entry): entry is string => entry !== undefined);
+	if (unsupported.length > 0) throw new Error(`${where} cannot yet represent exclusions, permission rules, tool budgets, MCP direct tools, or required-tool/extension contracts (unsupported here: ${unsupported.join(", ")}); ${absent}.`);
 	const resources = launch.remoteResources;
-	if (!resources || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(resources.agent) || resources.skills?.some((name) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)) || resources.toolCeiling?.some((name) => !/^[A-Za-z0-9_-]{1,64}$/u.test(name)) || (resources.reads !== undefined && resources.reads !== false && resources.reads.some((read) => typeof read !== "string" || Buffer.byteLength(read) > 4096))) throw new Error("Pane-native remote resources require bounded logical agent, skill, tool, and read names.");
+	if (!resources || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(resources.agent) || resources.skills?.some((name) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)) || resources.toolCeiling?.some((name) => !/^[A-Za-z0-9_-]{1,64}$/u.test(name)) || resources.requiredTools?.some((name) => !/^[A-Za-z0-9_-]{1,64}$/u.test(name)) || (resources.reads !== undefined && resources.reads !== false && resources.reads.some((read) => typeof read !== "string" || Buffer.byteLength(read) > 4096))) throw new Error("Pane-native remote resources require bounded logical agent, skill, tool, and read names.");
 	const args: string[] = [];
+	if (local) args.push(...sessionArgs(launch.storage));
 	if (launch.noSkills) args.push("--no-skills", "--no-prompt-templates");
 	if (launch.noContextFiles) args.push("--no-context-files");
 	if (launch.model) args.push("--model", launch.model);
-	return { args, resources: { agent: resources.agent, ...(resources.skills ? { skills: [...resources.skills] } : {}), ...(resources.toolCeiling ? { toolCeiling: [...resources.toolCeiling] } : {}), ...(resources.reads !== undefined ? { reads: resources.reads === false ? false : [...resources.reads] } : {}) } };
+	return { args, resources: { agent: resources.agent, ...(resources.skills ? { skills: [...resources.skills] } : {}), ...(resources.toolCeiling ? { toolCeiling: [...resources.toolCeiling] } : {}), ...(!local || !launch.runtime.requiredTools?.length ? {} : { requiredTools: [...new Set(launch.runtime.requiredTools)] }), ...(resources.reads !== undefined ? { reads: resources.reads === false ? false : [...resources.reads] } : {}) } };
 }
 
 export async function provisionHerdrPane(client: HerdrRpcClient, cwd: string, runId: string, runtimeDir: string, environment?: Record<string, string>, allocationKey = cwd): Promise<{ workspaceId: string; tabId: string; paneId: string }> {
