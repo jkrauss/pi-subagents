@@ -63,6 +63,8 @@ export function inheritedChildRuntime(config: ChildRuntimeConfig | undefined): I
 
 export interface BuildInProcessChildLaunchInput {
 	machine?: HerdrMachineReference;
+	/** Requested local Herdr tab placement for a background native Pi child. */
+	tabPlacement?: boolean;
 	remoteSkillNames?: string[];
 	remoteReads?: string[] | false;
 	parentSessionId?: string;
@@ -327,8 +329,9 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	const session: Omit<ChildSessionLaunch, "onExtensionError"> = {
 		cwd: input.cwd,
 		...(input.machine ? { machine: input.machine } : {}),
+		...(input.tabPlacement && !input.machine ? { placement: "tab" as const } : {}),
 		...(input.projectTrusted !== undefined ? { projectTrusted: input.projectTrusted } : {}),
-		...(input.machine ? { remoteResources: { agent: input.childAgentName, ...(input.remoteSkillNames ? { skills: input.remoteSkillNames } : {}), ...(input.remoteReads !== undefined ? { reads: input.remoteReads } : {}), ...(toolPlan.explicitToolAllowlist ? { toolCeiling: [...toolPlan.effectiveToolAllowlist] } : toolPlan.capabilityCeiling?.allowedTools ? { toolCeiling: [...toolPlan.capabilityCeiling.allowedTools] } : {}) } } : {}),
+		...(input.machine || input.tabPlacement ? { remoteResources: { agent: input.childAgentName, ...(input.remoteSkillNames ? { skills: input.remoteSkillNames } : {}), ...(input.remoteReads !== undefined ? { reads: input.remoteReads } : {}), ...(toolPlan.explicitToolAllowlist ? { toolCeiling: [...toolPlan.effectiveToolAllowlist] } : toolPlan.capabilityCeiling?.allowedTools ? { toolCeiling: [...toolPlan.capabilityCeiling.allowedTools] } : {}) } } : {}),
 		storage: childStorage(input),
 		...(input.parentSessionFile ? { parentSessionFile: input.parentSessionFile } : {}),
 		...(input.model ? { model: input.model } : {}),

@@ -43,8 +43,7 @@ import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { getActiveAsyncCapacitySnapshot, resolveAbandonedSlotReleaseAfterMs, resolveMaxActiveAsyncRunsPerSession } from "../runs/background/active-async-capacity.ts";
 import { cleanupResultIndexes, missionObserverResultCandidateFiles, resultFilePath } from "../runs/background/result-files.ts";
 import { ASYNC_RETENTION_DELAY_MS, cleanupAsyncRetention } from "../runs/background/async-retention.ts";
-import { createResultWatcher } from "../runs/background/result-watcher.ts";
-import { createResultDeliveryOwnership } from "../runs/background/result-delivery-ownership.ts";
+import { createResultWatcher } from "../runs/background/result-watcher.ts";import { createResultDeliveryOwnership } from "../runs/background/result-delivery-ownership.ts";
 import { createScheduledRunManager } from "../runs/background/scheduled-runs.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
@@ -277,6 +276,9 @@ export function projectActiveHerdrRuns(state: SubagentState): HerdrStatusRun[] {
 		});
 }
 
+/** Leftover owned Herdr tabs are reaped shortly after a session starts, never during startup. */
+const LOCAL_TAB_MAINTENANCE_DELAY_MS = 90_000;
+
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
 		return;
@@ -301,7 +303,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	const tempArtifactsDir = getArtifactsDir(null);
 	const artifactCleanupDays = config.artifactConfig?.cleanupDays ?? DEFAULT_ARTIFACT_CONFIG.cleanupDays;
 	cleanupAllArtifactDirs(artifactCleanupDays);
-	let resultIndexCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+	let resultIndexCleanupTimer: ReturnType<typeof setTimeout> | undefined;	let localTabMaintenanceTimer: ReturnType<typeof setTimeout> | undefined;
+	// Captured per session because the reaper reads project settings relative to the session cwd.
+	let maintenanceCwd: () => string = () => process.cwd();
 
 	const state: SubagentState = {
 		baseCwd: "",
@@ -536,6 +540,15 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				}
 			}, ASYNC_RETENTION_DELAY_MS);
 			asyncRetentionTimer.unref?.();
+		}
+		if (!localTabMaintenanceTimer) {
+			// Leftover owned tabs only ever cost a fallback, so cleaning them is best effort and never blocks a session.
+			localTabMaintenanceTimer = setTimeout(() => {
+				void import("../runs/shared/herdr-local-tabs.ts")
+					.then((module) => module.maintainHerdrLocalTabs({ cwd: maintenanceCwd() }))
+					.catch((error) => console.error("Failed to reap leftover Herdr subagent tabs:", error));
+			}, LOCAL_TAB_MAINTENANCE_DELAY_MS);
+			localTabMaintenanceTimer.unref?.();
 		}
 	};
 
@@ -985,6 +998,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			clearRuntimeAgentsForPi(pi);
 			if (resultIndexCleanupTimer) clearTimeout(resultIndexCleanupTimer);
 			resultIndexCleanupTimer = undefined;
+			if (localTabMaintenanceTimer) clearTimeout(localTabMaintenanceTimer);
+			localTabMaintenanceTimer = undefined;
 			if (asyncRetentionTimer) clearTimeout(asyncRetentionTimer);
 			asyncRetentionTimer = undefined;
 			if (modulePreloadTimer) clearTimeout(modulePreloadTimer);
@@ -1126,6 +1141,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		parentWake.bindSession(ctx);
 		completionNotifier.bindSession(ctx.sessionManager);
 		installRuntime(ctx);
+		maintenanceCwd = () => ctx.cwd;
 		startSessionMaintenance();
 		scheduleModulePreload();
 		const recovering = event.reason === "startup" || event.reason === "reload" || event.reason === "resume";

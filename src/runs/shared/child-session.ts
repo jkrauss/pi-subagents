@@ -57,6 +57,8 @@ export interface ChildSessionLaunch {
 	cwd: string;
 	/** Resolved pane-native placement. Local launches omit this field. */
 	machine?: HerdrMachineReference;
+	/** Requested local Herdr tab; the factory falls back in-process whenever it cannot place. */
+	placement?: "tab";
 	/** The launching session's project trust; undefined keeps Pi's default for hosts without trust. */
 	projectTrusted?: boolean;
 	/** Process-local provider source owned by the invoking foreground parent. */
@@ -101,6 +103,9 @@ export interface ChildSessionLaunch {
 	onExtensionError?: (error: ChildSessionExtensionError) => void;
 }
 
+/** Outcome of a requested local tab placement; local placement never fails a run, it only downgrades. */
+export type LocalTabPlacementOutcome = { placed: true } | { placed: false; kind: "unsupported" | "failed"; reason: string };
+
 export interface ChildSession {
 	subscribe(listener: (event: ChildSessionEvent) => void): () => void;
 	/** Resolves when the run ends, including after abort. */
@@ -124,6 +129,8 @@ export interface ChildSession {
 	readonly virtualModelId?: string;
 	readonly contextWindow?: number;
 	readonly machineEvidence?: { machineId: string; initial?: HerdrRemoteGitStatus; final?: HerdrRemoteGitStatus };
+	/** Set when the launch asked for a local Herdr tab: whether it was placed, and why not. */
+	localTabPlacement?: LocalTabPlacementOutcome;
 	/** Event-updated pane-native status; reading it performs no network work. */
 	readonly placementSnapshot?: unknown;
 	/** Set by the foreground host once the run detached; `factory.dispose()` leaves such children running. */
@@ -685,7 +692,7 @@ function createLazyPlacementFactory(local: ChildSessionFactory): ChildSessionFac
 	let placed: ChildSessionFactory | undefined;
 	const factory = async () => placed ??= (await import("./herdr-placed-run.ts")).createPlacementAwareChildSessionFactory(local);
 	return {
-		async create(launch) { return launch.machine ? (await factory()).create(launch) : local.create(launch); },
+		async create(launch) { return launch.machine || launch.placement === "tab" ? (await factory()).create(launch) : local.create(launch); },
 		async dispose() { if (placed) await placed.dispose(); else await local.dispose(); },
 	};
 }

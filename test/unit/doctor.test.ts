@@ -194,6 +194,30 @@ describe("buildDoctorReport", () => {
 		}
 	});
 
+	it("surfaces the Herdr local-tab placement preflight as its own section", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doctor-herdr-tabs-"));
+		try {
+			const lines = ["- placement: enabled (cap 2, stale after 15m, agents worker)", "- kill switch: PI_SUBAGENTS_HERDR_TABS=unset", "- herdr server: running, version 0.9.1, protocol 22, compatible yes"];
+			const report = buildDoctorReport({
+				cwd: root,
+				config: {},
+				state: makeState(root),
+				...NO_USAGE,
+				deps: {
+					isAsyncAvailable: () => true,
+					discoverAgentsAll: () => ({ builtin: [], user: [], project: [], chains: [], userDir: root, projectDir: root, userChainDir: root, projectChainDir: root, userSettingsPath: path.join(root, "user.json"), projectSettingsPath: path.join(root, "project.json") }),
+					discoverAvailableSkills: () => [],
+					diagnoseIntercomBridge: () => ({ active: false, mode: "off", wantsIntercom: false, supervisorChannelAvailable: false, extensionDir: "none" }),
+					diagnoseHerdrLocalTabs: () => lines,
+				},
+			});
+			assert.match(report, /Herdr local tabs[\s\S]*- placement: enabled \(cap 2, stale after 15m, agents worker\)/u);
+			assert.match(report, /- herdr server: running, version 0\.9\.1, protocol 22, compatible yes/u);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("keeps reporting when a directory or discovery check fails", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doctor-failure-"));
 		try {

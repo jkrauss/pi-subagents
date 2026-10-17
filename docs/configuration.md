@@ -226,6 +226,23 @@ The integration is off by default and supports macOS and Linux. It is disabled o
 
 Set `enabled` to `false` (or remove the block) as a kill switch. In that state, `pi-subagents` does not invoke `orca` and creates no Orca tabs. The temporary mirror files contain child output, use private file modes where supported, and are removed shortly after the run finishes. Each mirror is capped at 1 MiB. The observer stops accepting progress when the cap or stream backpressure is reached and appends a truncation notice. The viewer removes terminal control sequences with parser state that persists across file reads. On completion, the viewer exits back to the Orca terminal's shell prompt; the tab and its terminal scrollback remain open until the user closes the tab. A successfully completed native Pi run with a recorded session ends with a safely quoted `rm -- <exact-session-path>` command; failed, stopped, timed-out, and sessionless runs do not show the removal command.
 
+## `subagents.herdrLocalTabs`
+
+The placement of native Pi children into local Herdr tabs is documented in [agents.md](agents.md#running-native-pi-children-in-local-herdr-tabs). This section only summarizes the switch surface.
+
+```json
+{ "subagents": { "herdrLocalTabs": { "mode": "off", "agents": [], "maxTabs": 4, "staleAfterMinutes": 30 } } }
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `"off"` \| `"on"` | `"off"` | Enables local tab placement. |
+| `agents` | string[] | any | Allowlist of agents that may be placed; `[]` allows nobody. |
+| `maxTabs` | number | `4` | Concurrent owned tabs; `1`–`12`. |
+| `staleAfterMinutes` | number | `30` | Age after which an orphaned run directory is pruned; `1`–`1440`. |
+
+An invalid block is reported once and leaves placement off rather than guessing. `PI_SUBAGENTS_HERDR_TABS` overrides the setting per process (`0`/`off`/`false`/`no` disables, `1`/`on`/`true`/`yes` enables). Placement failures never fail a run; they fall back to the in-process child with a recorded reason.
+
 ## `asyncByDefault`
 
 ```json

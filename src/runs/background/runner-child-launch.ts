@@ -6,6 +6,7 @@ import { normalizeExtensionBindings } from "../shared/extension-bindings.ts";
 import type { RunnerSubagentStep } from "../shared/parallel-utils.ts";
 import { formatAcceptancePrompt } from "../shared/acceptance.ts";
 import { isAgentContract } from "../shared/agent-contract.ts";
+import { resolveHerdrLocalTabIntent } from "../shared/herdr-local-tabs.ts";
 
 export interface RunnerChildLaunchContext {
 	cwd: string;
@@ -34,8 +35,12 @@ export function buildRunnerChildLaunch(step: RunnerSubagentStep, ctx: RunnerChil
 	const acceptancePrompt = step.effectiveAcceptance
 		? formatAcceptancePrompt(step.effectiveAcceptance, { reportOptional: isAgentContract(step.agentContract), structuredOutput: Boolean(step.structuredOutput?.acceptanceReportPath) })
 		: "";
+	const launchCwd = step.cwd ?? ctx.cwd;
+	// Local tab placement is an opt-in, background-only convenience: an ineligible launch simply stays in-process here.
+	const tabPlacement = step.machine === undefined && resolveHerdrLocalTabIntent({ agent: step.agent, cwd: launchCwd, machine: step.machine, env: process.env }).ok;
 	return buildInProcessChildLaunch({
 		machine: step.machine,
+		tabPlacement,
 		remoteSkillNames: step.skills,
 		remoteReads: step.remoteReads,
 		parentSessionId: step.parentSessionId,
@@ -63,7 +68,7 @@ export function buildRunnerChildLaunch(step: RunnerSubagentStep, ctx: RunnerChil
 		builtinMcpTools: step.builtinMcpTools,
 		extensionBindings: normalizeExtensionBindings(step.extensionBindings)?.value,
 		capabilityCeiling: step.capabilityCeiling ?? ctx.capabilityCeiling,
-		cwd: step.cwd ?? ctx.cwd,
+		cwd: launchCwd,
 		intercomSessionName: ctx.childIntercomTarget,
 		projectTrusted: ctx.projectTrusted,
 		sessionName: attempt.sessionName,

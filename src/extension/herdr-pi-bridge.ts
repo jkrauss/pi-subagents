@@ -72,7 +72,8 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 		client.write(encodeHerdrPiFrame(record));
 	};
 	const sessionId = (ctx: BridgeContext) => ctx.sessionManager?.getSessionId?.();
-	const activeTools = (ctx: BridgeContext) => ctx.getActiveTools?.() ?? [];
+	// Pi moved the active-tool accessors from the handler context to the extension API; support both shapes.
+	const activeTools = (ctx: BridgeContext) => ctx.getActiveTools?.() ?? (pi as unknown as { getActiveTools?(): string[] }).getActiveTools?.() ?? [];
 
 	pi.registerTool({
 		name: "contact_supervisor",
@@ -155,6 +156,7 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 				}
 			} catch (error) { socket.destroy(error as Error); }
 		});
+		socket.on("error", (error) => { process.stderr.write(`pi-subagents bridge protocol error: ${error instanceof Error ? error.message : String(error)}\n`); });
 		socket.on("close", () => { if (client === socket) client = undefined; });
 		if (context && nativeSessionId) send({ type: "ready", packageVersion: packageJson.version, nativeSessionId, sessionFile: context.sessionManager?.getSessionFile?.(), cwd: process.cwd(), tools: activeTools(context), model: context.model?.provider && context.model.id ? `${context.model.provider}/${context.model.id}` : undefined, configured, activeRequestId, evidenceCursor, evidenceFloor: journal[0]?.cursor ?? evidenceCursor + 1, initialGit: gitEvidence(process.cwd()) });
 	});

@@ -18,6 +18,8 @@ import type { ExtensionBindings } from "../runs/shared/extension-bindings.ts";
 import type { WorkflowChildPermitContext } from "./workflow-child-permit.ts";
 import type { WatchdogWarningDetails } from "../watchdog/types.ts";
 import type { RequiredChildExtensionSnapshot } from "./required-child-extensions.ts";
+import type { LocalTabPlacementOutcome } from "../runs/shared/child-session.ts";
+export type { LocalTabPlacementOutcome } from "../runs/shared/child-session.ts";
 
 // ============================================================================
 // Basic Types
@@ -1309,6 +1311,8 @@ export interface SingleResult {
 	model?: string;
 	/** Authoritative before/after Git evidence captured by a pane-native remote machine. */
 	nativeMachine?: { provider: "herdr"; machineId: string; initialGit?: HerdrRemoteGitStatus; finalGit?: HerdrRemoteGitStatus };
+	/** Local Herdr tab outcome for a background native Pi child. */
+	localTabPlacement?: LocalTabPlacementOutcome;
 	/** Effective thinking level used by this foreground child, when known. */
 	thinking?: string;
 	requestedModel?: string;

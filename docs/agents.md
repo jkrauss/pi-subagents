@@ -282,6 +282,34 @@ Placed external profiles are one-shot and stop-only: they cannot steer, resume, 
 
 pi-subagents never clones, pulls, or checks out on the machine. Generic `external-cli` commands and managed worktrees are rejected before launch; saved-machine placement accepts native Pi and only the six code-owned external profiles.
 
+## Running native Pi children in local Herdr tabs
+
+A native Pi child can run in a visible tab of the operator's *current* Herdr workspace instead of invisibly inside the detached runner process. The transport is the local Herdr socket (no SSH), and the child is an ordinary local `pi` process, so cwd, Git evidence, and file mutations keep their local semantics. This is a placement convenience on top of the normal background runner, not a different kind of run.
+
+Opt in with `subagents.herdrLocalTabs` (project settings beat user settings field by field):
+
+```json
+{
+  "subagents": {
+    "herdrLocalTabs": { "mode": "on", "agents": ["worker", "researcher"], "maxTabs": 4, "staleAfterMinutes": 30 }
+  }
+}
+```
+
+- `mode` (`"off"` default, `"on"`) enables placement. `agents` restricts it to an allowlist; an empty array means nobody. `maxTabs` (default 4, hard ceiling 12) caps concurrent owned tabs. `staleAfterMinutes` (default 30) bounds how long an orphaned run directory survives.
+- `PI_SUBAGENTS_HERDR_TABS` is the process-level kill switch: `1`/`on`/`true`/`yes` enables placement regardless of settings, `0`/`off`/`false`/`no` disables it unconditionally.
+- Placement only applies to native Pi children launched as background runs with a run identity. External CLI profiles, saved-machine runs (`machine` takes precedence), forked or resumed children, nested delegation, local extension paths, process environment transfer, `excludeTools`, `toolBudget`, permission rules, and direct MCP tools are never placed in a local tab.
+
+**Placement is an optimization, never a gate.** Every reason a launch cannot be placed — placement disabled, not inside Herdr, missing workspace or socket identity, incompatible Herdr protocol, tab cap reached, pane start timeout, bridge handshake mismatch, tool-ceiling or model acknowledgement mismatch — falls back to the ordinary in-process child and records the reason. Only an explicit saved-machine launch fails closed, because a machine is an operator instruction rather than a convenience.
+
+What the feature owns and how it stays safe:
+
+- Owned tabs always carry the label prefix `subagent-`. Nothing else is ever closed, and reaping requires a live ownership journal that matches tab, pane, terminal, and workspace identity.
+- Each placed run gets one private runtime directory (`~/.pi/agent/pi-subagents/herdr-runs/<runId>`, mode 0700) holding the child's bridge socket and manifest, plus a journal in `~/.pi/agent/pi-subagents/herdr-run-journal/`. Cleanup reclaims the owned tab, removes the run directory, and finally removes the ownership journal; the tab is closed through the authoritative live pane record, and an identity mismatch refuses cleanup instead of closing a foreign pane.
+- At session start, a maintenance pass reclaims leftover owned tabs whose recorded process is provably dead, prunes stale run directories, and refuses to touch anything whose ownership is uncertain.
+- The placement artifact (`<runId>.placement.json`) records the outcome and integration evidence: `packageVersion`, bridge `manifestProtocol`, `serverVersion`, `serverProtocol`, `serverCompatible`, and the `herdr integration status` line for `pi` at placement time.
+- `herdr integration install pi` keeps the Pi integration that feeds Herdr pane titles current. `/subagents-doctor` reports the policy, the socket, the server protocol, the integration line, and leftover owned records.
+
 ## Sandboxing background children with a launcher
 
 A launcher wraps an agent's background runner in a command you choose, so that agent can run in a different sandbox from the parent session. Define the command in the user config key [`runnerLaunchers`](configuration.md#runnerlaunchers), then name it in the agent file:

@@ -19,3 +19,6 @@ tmp/
 /perf-*.md
 /pr-*-gate*.json
 /pr-*-review*.md
+
+# graphify knowledge graph output (local build artifact)
+graphify-out/

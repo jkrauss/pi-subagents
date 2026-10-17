@@ -5,6 +5,7 @@ import { isAsyncAvailable } from "../runs/background/async-execution.ts";
 import { formatSpawnBudgetSummary } from "../runs/shared/spawn-budget.ts";
 import { diagnoseIntercomBridge, type IntercomBridgeDiagnostic } from "../intercom/intercom-bridge.ts";
 import { discoverAvailableSkills, type SkillSource } from "../agents/skills.ts";
+import { diagnoseHerdrLocalTabs } from "../shared/herdr-local-tab-settings.ts";
 import {
 	DIRS,
 	CHAIN_RUNS_DIR,
@@ -29,6 +30,7 @@ interface DoctorDeps {
 	discoverAgentsAll: typeof discoverAgentsAll;
 	discoverAvailableSkills: typeof discoverAvailableSkills;
 	diagnoseIntercomBridge: typeof diagnoseIntercomBridge;
+	diagnoseHerdrLocalTabs: typeof diagnoseHerdrLocalTabs;
 }
 
 interface DoctorReportInput {
@@ -62,6 +64,7 @@ const DEFAULT_DEPS: DoctorDeps = {
 	discoverAgentsAll,
 	discoverAvailableSkills,
 	diagnoseIntercomBridge,
+	diagnoseHerdrLocalTabs,
 };
 
 function errorText(error: unknown): string {
@@ -268,6 +271,9 @@ export function buildDoctorReport(input: DoctorReportInput): string {
 			orchestratorTarget: input.orchestratorTarget,
 			cwd: input.cwd,
 		}), input.context).join("\n")).split("\n"),
+		"",
+		"Herdr local tabs",
+		...lineFromCheck("herdr local tabs", () => deps.diagnoseHerdrLocalTabs({ cwd: input.cwd }).join("\n")).split("\n"),
 	];
 	return lines.join("\n");
 }
