@@ -72,6 +72,18 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 		client.write(encodeHerdrPiFrame(record));
 	};
 	const sessionId = (ctx: BridgeContext) => ctx.sessionManager?.getSessionId?.();
+	// A protocol error closes the bridge and the pane is reclaimed moments later, so the reason is
+	// also written to a bounded file the parent can copy into the placement artifact.
+	const recordBridgeError = (error: unknown): void => {
+		try {
+			const line = `${new Date().toISOString()} ${error instanceof Error ? error.message : String(error)}\n`;
+			const logPath = path.join(runDir, "bridge-errors.log");
+			const existing = fs.existsSync(logPath) && fs.statSync(logPath).size < 16 * 1024 ? fs.readFileSync(logPath, "utf8") : "";
+			fs.writeFileSync(logPath, (existing + line).slice(-16 * 1024), { mode: 0o600 });
+		} catch {
+			// Diagnostics must never take the child down.
+		}
+	};
 	// Pi moved the active-tool accessors from the handler context to the extension API; support both shapes.
 	const activeTools = (ctx: BridgeContext) => ctx.getActiveTools?.() ?? (pi as unknown as { getActiveTools?(): string[] }).getActiveTools?.() ?? [];
 
@@ -144,7 +156,7 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 						const invalidReads = resources.reads !== undefined && resources.reads !== false && (!Array.isArray(resources.reads) || resources.reads.some((name) => typeof name !== "string"));
 						if (typeof resources.agent !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(resources.agent) || invalidSkills || invalidReads) throw new Error("Remote logical resource names are invalid.");
 						const resolved = resolveRemoteHerdrResources(process.cwd(), { agent: resources.agent, ...(resources.skills ? { skills: resources.skills as string[] } : {}), ...(resources.toolCeiling ? { toolCeiling: resources.toolCeiling as string[] } : {}), ...(resources.reads !== undefined ? { reads: resources.reads as string[] | false } : {}) }, context ? activeTools(context) : []); resolvedSystemPrompt = resolved.systemPrompt; resolvedContextPolicy = resolved;
-						(pi as unknown as { setActiveTools?(tools: string[]): void }).setActiveTools?.(resolved.tools); const acknowledged = context ? activeTools(context) : []; if (acknowledged.some((tool) => !resolved.tools.includes(tool)) || resolved.tools.some((tool) => !acknowledged.includes(tool))) throw new Error("Remote Pi did not apply the resolved active-tool set exactly.");
+						(pi as unknown as { setActiveTools?(tools: string[]): void }).setActiveTools?.(resolved.tools); const acknowledged = context ? activeTools(context) : []; if (acknowledged.some((tool) => !resolved.tools.includes(tool)) || resolved.tools.some((tool) => !acknowledged.includes(tool))) throw new Error(`Remote Pi did not apply the resolved active-tool set exactly (extra: ${acknowledged.filter((tool) => !resolved.tools.includes(tool)).join(", ") || "none"}; missing: ${resolved.tools.filter((tool) => !acknowledged.includes(tool)).join(", ") || "none"}).`);
 						configured = true; send({ type: "configured", requestId: frame.requestId, nativeSessionId, agent: resolved.agent, skills: resolved.skills, model: context?.model?.provider && context.model.id ? `${context.model.provider}/${context.model.id}` : undefined, tools: acknowledged }); continue;
 					}
 					if (frame.type !== "prepare" || typeof frame.requestId !== "string" || pending.has(frame.requestId) || !configured) throw new Error("Invalid, duplicate, or unconfigured bridge request.");
@@ -154,9 +166,9 @@ export default function registerHerdrPiBridge(pi: ExtensionAPI): void {
 					pending.set(frame.requestId, { operation: operation as PendingRequest["operation"], ...(text !== undefined ? { text } : {}), ...(typeof frame.supervisorId === "string" ? { supervisorId: frame.supervisorId } : {}) });
 					send({ type: "prepared", requestId: frame.requestId, nativeSessionId });
 				}
-			} catch (error) { socket.destroy(error as Error); }
+			} catch (error) { recordBridgeError(error); socket.destroy(error as Error); }
 		});
-		socket.on("error", (error) => { process.stderr.write(`pi-subagents bridge protocol error: ${error instanceof Error ? error.message : String(error)}\n`); });
+		socket.on("error", (error) => { recordBridgeError(error); process.stderr.write(`pi-subagents bridge protocol error: ${error instanceof Error ? error.message : String(error)}\n`); });
 		socket.on("close", () => { if (client === socket) client = undefined; });
 		if (context && nativeSessionId) send({ type: "ready", packageVersion: packageJson.version, nativeSessionId, sessionFile: context.sessionManager?.getSessionFile?.(), cwd: process.cwd(), tools: activeTools(context), model: context.model?.provider && context.model.id ? `${context.model.provider}/${context.model.id}` : undefined, configured, activeRequestId, evidenceCursor, evidenceFloor: journal[0]?.cursor ?? evidenceCursor + 1, initialGit: gitEvidence(process.cwd()) });
 	});

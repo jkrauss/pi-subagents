@@ -257,6 +257,17 @@ describe("local Herdr tab provisioning", () => {
 		const client = { async call(method: string) { return snapshotResponse({ tabs, panes: [], agents: [] }); } } as never;
 		await assert.rejects(() => provisionHerdrLocalTab(client, { ...input, maxTabs: 4 }), /pane budget/u);
 	}));
+	it("removes an owned run directory idempotently and refuses foreign paths", async () => withTempAgentDir(async () => {
+		const { createLocalRuntimeDir, removeLocalRuntimeDir } = await import("../../src/runs/shared/herdr-local-tabs.ts");
+		const directory = createLocalRuntimeDir("run_12345678");
+		assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+		removeLocalRuntimeDir(directory);
+		assert.equal(fs.existsSync(directory), false);
+		// A second removal is a no-op, so a cleanup can never mask the placement error that caused it.
+		removeLocalRuntimeDir(directory);
+		assert.throws(() => removeLocalRuntimeDir("/tmp/not-ours"), /not an owned run runtime directory/u);
+	}));
+
 	it("requires the child to prove the exact tool contract", async () => {
 		const { assertLocalToolContract } = await import("../../src/runs/shared/herdr-local-tabs.ts");
 		assertLocalToolContract({ toolCeiling: ["read", "bash"], requiredTools: ["read"] }, ["read"]);

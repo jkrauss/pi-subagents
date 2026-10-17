@@ -192,7 +192,15 @@ export function createLocalRuntimeDir(runId: string): string {
 export function removeLocalRuntimeDir(runtimeDir: string): void {
 	const root = herdrPiRuntimeRoot(getAgentDir());
 	if (path.dirname(runtimeDir) !== root || !SAFE_RUN_DIR_NAME.test(path.basename(runtimeDir))) throw new Error("Refusing to remove a path that is not an owned run runtime directory.");
-	const stat = fs.lstatSync(runtimeDir);
+	let stat: fs.Stats;
+	try {
+		stat = fs.lstatSync(runtimeDir);
+	} catch (error) {
+		// A vanished run directory is the goal, not a failure: cleanup must not mask the
+		// placement error that led here by throwing on an already-removed path.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw error;
+	}
 	if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Refusing to remove a path that is not an owned directory.");
 	fs.rmSync(runtimeDir, { recursive: true, force: true });
 }
@@ -737,16 +745,31 @@ export async function maintainHerdrLocalTabs(input: { cwd: string; env?: NodeJS.
 	}
 }
 
+/** Bounded tail of the placed child's own protocol error log, when it managed to write one. */
+function readBridgeErrorLog(runId: string): string | undefined {
+	try {
+		const logPath = path.join(herdrPiRuntimeRoot(getAgentDir()), runId, "bridge-errors.log");
+		const stat = fs.lstatSync(logPath);
+		if (stat.isSymbolicLink() || stat.size === 0) return undefined;
+		const text = fs.readFileSync(logPath, "utf8").trim();
+		return text.length === 0 ? undefined : text.slice(-2048);
+	} catch {
+		return undefined;
+	}
+}
+
 /** Records why a launch fell back; the run artifact reports it. */
 export function recordLocalTabFallback(launch: ChildSessionLaunch, outcome: LocalTabPlacementOutcome): void {
 	if (outcome.placed || !launch.runtime.runId) return;
+	// A lost bridge connection says nothing on its own; the child's own error is the actionable evidence.
+	const bridgeError = outcome.kind === "failed" ? readBridgeErrorLog(launch.runtime.runId) : undefined;
 	try {
-		writePlacementRecord(launch.runtime.runId, outcome, { requested: "tab", agent: launch.remoteResources?.agent, cwd: launch.cwd });
+		writePlacementRecord(launch.runtime.runId, outcome, { requested: "tab", agent: launch.remoteResources?.agent, cwd: launch.cwd, ...(bridgeError === undefined ? {} : { bridgeError }) });
 	} catch {
 		// Diagnostic only.
 	}
 	try {
-		console.warn(`pi-subagents: local Herdr tab placement fell back to an in-process child (${outcome.kind}): ${outcome.reason}`);
+		console.warn(`pi-subagents: local Herdr tab placement fell back to an in-process child (${outcome.kind}): ${outcome.reason}${bridgeError === undefined ? "" : ` — child bridge: ${bridgeError.split("\n").slice(-1)[0]}`}`);
 	} catch {
 		// A warning must never fail a run.
 	}
@@ -825,7 +848,17 @@ export async function createHerdrLocalTabSession(launch: ChildSessionLaunch, opt
 		observeHerdr = (event) => session?.observeHerdr(event);
 		return session;
 	} catch (error) {
-		await owner.cleanup();
-		throw error;
+		// Capture the child's own protocol error before cleanup removes the run directory, so a lost
+		// bridge connection is never the whole story the operator gets to see.
+		const bridgeError = readBridgeErrorLog(owner.runId);
+		// A cleanup failure must never replace the placement error that caused the fallback:
+		// the recorded reason is what the operator diagnoses from.
+		try {
+			await owner.cleanup();
+		} catch {
+			// Reported by the reaper at the next session start if the tab outlived this attempt.
+		}
+		const message = error instanceof Error ? error.message : String(error);
+		throw bridgeError === undefined ? error : new Error(`${message} — child bridge: ${bridgeError.split("\n").slice(-1)[0]}`, { cause: error });
 	}
 }
