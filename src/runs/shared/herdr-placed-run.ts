@@ -12,6 +12,50 @@ import { encodeHerdrPiFrame, HERDR_PI_MODE_ENV, HERDR_PI_PROTOCOL, HERDR_PI_RUN_
 import { getAgentDir } from "../../shared/utils.ts";
 import { herdrRunJournalDir } from "../../shared/herdr-local-tab-settings.ts";
 
+/** The started agent is only usable once Herdr reports it as the named, interactive agent. */
+export const HERDR_AGENT_READY_TIMEOUT_MS = 20_000;
+const HERDR_AGENT_READY_POLL_MS = 250;
+/** A rejected `agent.start` can leave the pane's shell busy; back off instead of hammering it. */
+export const HERDR_BUSY_SHELL_RETRY_MS = 400;
+
+/**
+ * Herdr answers `agent.start` before the agent is addressable. A prompt sent in that window fails
+ * with "is not an active named agent", which loses the whole run — so placement waits here until
+ * the agent it started is the named, interactive agent inside the pane it owns.
+ */
+function herdrAgentReadiness(value: unknown, name: string, paneId: string): "ready" | "pending" | "identity" {
+	const agent = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+	const currentName = agent.name;
+	const currentPane = agent.pane_id;
+	if ((typeof currentName === "string" && currentName !== name) || (typeof currentPane === "string" && currentPane !== paneId)) return "identity";
+	return currentName === name && agent.interactive_ready === true ? "ready" : "pending";
+}
+
+/** Reads the agent behind a name; a missing agent is a normal state, not an error. */
+export async function readHerdrAgentIfPresent(client: HerdrRpcClient, name: string): Promise<Record<string, unknown> | undefined> {
+	try { return tagged(await client.call<Record<string, unknown>>("agent.get", { target: name }), "agent_info", "agent") as Record<string, unknown>; }
+	catch (error) { if (error instanceof HerdrRpcError) return undefined; throw error; }
+}
+
+export async function waitForHerdrAgentReady(input: { client: HerdrRpcClient; agentName: string; paneId: string; started?: unknown; timeoutMs?: number; pollMs?: number; clock?: { now(): number; wait(ms: number): Promise<void> } }): Promise<void> {
+	const timeoutMs = input.timeoutMs ?? HERDR_AGENT_READY_TIMEOUT_MS, pollMs = input.pollMs ?? HERDR_AGENT_READY_POLL_MS;
+	if (input.started !== undefined && herdrAgentReadiness(input.started, input.agentName, input.paneId) === "ready") return;
+	const clock = input.clock ?? { now: () => Date.now(), wait: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) };
+	const deadline = clock.now() + timeoutMs;
+	let last = "no agent_info yet";
+	for (;;) {
+		const current = await readHerdrAgentIfPresent(input.client, input.agentName);
+		if (current) {
+			const readiness = herdrAgentReadiness(current, input.agentName, input.paneId);
+			if (readiness === "ready") return;
+			if (readiness === "identity") throw new Error(`Herdr agent name '${input.agentName}' is now bound to a different pane or name; refusing to prompt a foreign agent.`);
+			last = `name=${String(current.name ?? "?")} interactive_ready=${String(current.interactive_ready ?? "?")}`;
+		}
+		if (clock.now() >= deadline) throw new Error(`Herdr agent '${input.agentName}' did not become interactive within ${timeoutMs}ms (${last}); local placement refuses to prompt an agent it cannot address.`);
+		await clock.wait(pollMs);
+	}
+}
+
 export interface HerdrRunIdentity { runId: string; /** Present for saved-machine runs; a local placed run has no machine. */ machineId?: string; /** Local tab label that names this run, the reverse lookup the reaper uses. */ label?: string; target: string; session: string | null; workspaceId: string; tabId: string; paneId: string; terminalId: string; agentName: string; nativeSessionId: string; cwd: string; runtimeDir: string }
 export interface HerdrRunSnapshot { connection: "connected" | "unknown" | "closed"; state: "ready" | "working" | "blocked" | "settled" | "unknown"; identity?: HerdrRunIdentity; revision: number }
 export interface HerdrReconnectCandidate { endpoint: { session: string | null; protocol: number; version: string }; agents: Array<{ terminal_id?: string; pane_id?: string; agent_status?: string }>; bridge: { runId?: string; nativeSessionId?: string; packageVersion?: string; protocol?: number; evidenceCursor?: number; evidenceFloor?: number } }
@@ -239,17 +283,23 @@ export class HerdrPlacedRunOwner implements PlacedRunOwner {
 	statusSubscriptions(paneId = this.owned?.paneId): unknown[] { if (!paneId) throw new Error("Herdr status subscription requires a provisioned pane."); return herdrStatusSubscriptions(paneId); }
 	async subscribe(listener: (event: unknown) => void, disconnected: (error: Error) => void): Promise<void> { const observed = this.connection; let adopted = false, candidateLost: Error | undefined; const unsubscribe = await observed.client.subscribe(this.statusSubscriptions(), (event) => { this.observeEvent(event); listener(event); }, (error) => { if (!adopted) { candidateLost ??= error; return; } if (!this.markConnectionUnknown(observed)) return; disconnected(error); }); if (candidateLost) { unsubscribe(); throw candidateLost; } this.#unsubscribe = unsubscribe; adopted = true; }
 	async provision(environment?: Record<string, string>): Promise<{ workspaceId: string; tabId: string; paneId: string }> { this.owned = await provisionHerdrPane(this.connection.client, this.machine.cwd, this.runId, this.runtimeDir, environment, herdrPaneAllocationKey(this.machine.target, this.connection.endpoint.session, this.machine.cwd)); return this.owned; }
-	async start(kind: "pi" | "claude" | "cursor" | "codex", name: string, args: string[], options: { timeoutMs?: number; pollMs?: number; clock?: { now(): number; wait(ms: number): Promise<void> } } = {}): Promise<{ terminalId: string; paneId: string; argv: string[] }> {
+	async start(kind: "pi" | "claude" | "cursor" | "codex", name: string, args: string[], options: { timeoutMs?: number; readyTimeoutMs?: number; pollMs?: number; clock?: { now(): number; wait(ms: number): Promise<void> } } = {}): Promise<{ terminalId: string; paneId: string; argv: string[] }> {
 		if (!this.owned) throw new Error("Herdr placement owner has not provisioned its pane."); const clock = options.clock ?? { now: () => Date.now(), wait: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) }, deadline = clock.now() + (options.timeoutMs ?? 5_000), pollMs = options.pollMs ?? 50;
 		let response: unknown;
 		for (;;) {
 			try { response = await this.connection.client.call("agent.start", { name, kind, pane_id: this.owned.paneId, args, timeout_ms: 45_000 }, 60_000); break; }
 			catch (error) {
 				if (!(error instanceof Error) || !error.message.includes("is not an available shell")) throw error;
-				const pane = tagged(await this.connection.client.call("pane.get", { pane_id: this.owned.paneId }), "pane_info", "pane"); if (pane.pane_id !== this.owned.paneId || pane.workspace_id !== this.owned.workspaceId || pane.tab_id !== this.owned.tabId) throw new Error("Herdr startup pane identity changed after a transient start rejection.", { cause: error }); if (pane.agent != null || pane.agent_session != null) throw new Error("Herdr startup pane became occupied after a transient start rejection.", { cause: error }); if (clock.now() >= deadline) throw new Error("Herdr owned pane remained unavailable until the startup deadline.", { cause: error }); await clock.wait(Math.min(pollMs, deadline - clock.now()));
+				const pane = tagged(await this.connection.client.call("pane.get", { pane_id: this.owned.paneId }), "pane_info", "pane"); if (pane.pane_id !== this.owned.paneId || pane.workspace_id !== this.owned.workspaceId || pane.tab_id !== this.owned.tabId) throw new Error("Herdr startup pane identity changed after a transient start rejection.", { cause: error });
+				// A rejected attempt can still have started the agent; adopting it beats starting a second one.
+				const adopted = await readHerdrAgentIfPresent(this.connection.client, name); if (adopted) { response = { type: "agent_started", agent: adopted }; break; }
+				if (pane.agent != null || pane.agent_session != null) throw new Error("Herdr startup pane became occupied after a transient start rejection.", { cause: error });
+				if (clock.now() >= deadline) throw new Error("Herdr owned pane remained unavailable until the startup deadline.", { cause: error }); await clock.wait(Math.min(Math.max(pollMs, HERDR_BUSY_SHELL_RETRY_MS), deadline - clock.now()));
 			}
 		}
-		const started = parseHerdrAgent(response, "agent_started"), argv = [kind, ...args], terminalId = idOf(started, "terminal_id"), paneId = idOf(started, "pane_id"); if (paneId !== this.owned.paneId) throw new Error("Herdr started the native agent in an unexpected pane."); this.agentName = name; this.terminalId = terminalId; this.startedArgv = argv; return { terminalId, paneId, argv };
+		const started = parseHerdrAgent(response, "agent_started"), argv = [kind, ...args], terminalId = idOf(started, "terminal_id"), paneId = idOf(started, "pane_id"); if (paneId !== this.owned.paneId) throw new Error("Herdr started the native agent in an unexpected pane.");
+		await waitForHerdrAgentReady({ client: this.connection.client, agentName: name, paneId: this.owned.paneId, started, ...(options.readyTimeoutMs === undefined ? {} : { timeoutMs: options.readyTimeoutMs }), ...(options.clock === undefined ? {} : { clock: options.clock }) });
+		this.agentName = name; this.terminalId = terminalId; this.startedArgv = argv; return { terminalId, paneId, argv };
 	}
 	journal(identity: HerdrRunIdentity): void { this.identity = identity; this.#snapshot = { ...this.#snapshot, identity }; const journalDir = herdrRunJournalDir(); fs.mkdirSync(journalDir, { recursive: true, mode: 0o700 }); fs.writeFileSync(path.join(journalDir, `${this.runId}.json`), JSON.stringify({ version: 1, identity, state: "ready", updatedAt: Date.now() }), { mode: 0o600, flag: "wx" }); }
 	get snapshot(): HerdrRunSnapshot { return this.#snapshot; }
